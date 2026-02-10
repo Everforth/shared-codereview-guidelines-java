@@ -74,11 +74,13 @@ function handleUpdate() {
 
 // 削除
 function handleDelete(itemId: number) {
-  ElMessageBox.confirm('この処理は取り消せません。実行しますか？', '削除する', {
-    confirmButtonText: 'OK',
-    cancelButtonText: 'キャンセル',
-    type: 'warning'
-  }).then(() => {
+  // Quasarの確認ダイアログのラッパー
+  Dialog.create({
+    title: '削除する',
+    message: 'この処理は取り消せません。実行しますか？',
+    ok: 'OK',
+    cancel: 'キャンセル',
+  }).onOk(() => {
     store.deleteItem(itemId).then(() => {
       // リストの再読み込み
     })
