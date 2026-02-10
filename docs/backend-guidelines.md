@@ -26,9 +26,9 @@
 
 レビュー開始時、以下のファイルパターンに変更があるか確認する:
 
-- `*-agent.service.ts`
-- `*-agent/*.ts`
-- `*/agents/*.ts`
+- `*AgentService.java`
+- `*-agent/*.java`
+- `*/agents/*.java`
 - Tool定義ファイル（`**/tools/**`）
 
 該当ファイルがある場合、AI Agent層を最初にレビューする。
@@ -79,7 +79,7 @@ STEP 1で決定した層に対応するガイドラインを確認してくだ�
   - enumNameが明示的に指定されているか
   - migrationが手書きで、適切なALTER TYPE文を使用しているか
   - deprecated値にコメントが付いているか
-  - TypeORMの自動生成migrationでenumが変更されていないか
+  - ORMの自動生成migrationでenumが変更されていないか
 
 ### STEP 3: 1層のみレビュー実施
 

@@ -2,237 +2,246 @@
 
 ### 必須チェック項目：
 
-- **型定義パターンの遵守**: Tool入力用スキーマと内部保存用の型を適切に分離しているか
+- **型定義パターンの遵守**: Tool入力スキーマと内部保存モデルを適切に分離しているか
 - **Transform関数の配置**: AI入力から内部形式への変換ロジックを適切に実装しているか
-- **FunctionCallResultの設計**: Agent別の結果型が適切に定義され、result.messageの役割が明確か
-- **additionalDataの管理**: ChatMessage.dataに焼くべきデータと焼かないデータが適切に区別されているか
+- **FunctionCallResultの設計**: Agent別の結果モデルが適切に定義され、`result.message`の役割が明確か
+- **additionalDataの管理**: `ChatMessage.data`に保存すべきデータと保存しないデータが適切に区別されているか
 - **RunStepによる監査ログ**: Tool実行の入出力が適切に記録されているか
-- **空スキーマの定義ファイル不要**: 中身が空の型定義（`z.object({})`など）は別ファイルに分離せず使用箇所に直接記述する
-- **AIツールの戻り値の最小化**: ツール結果は`message`のみ使用されるため、プログラム的に処理するデータ（ID等）以外は返さない
-- **検索ツールの寛容な設計**: 重複登録防止などが目的の検索ツールは、呼び出し側が正確に指定しなくても候補を見つけられる寛容な設計にする
+- **空スキーマ定義ファイル不要**: 中身が空のリクエストDTO等は別ファイルに分離せず使用箇所に直接記述する
+- **AIツール戻り値の最小化**: ツール結果は`message`とプログラム的に必要な値（ID等）だけ返す
+- **検索ツールの寛容な設計**: 重複登録防止目的などの検索ツールは、入力が不完全でも候補を見つけられる設計にする
 
 ---
 
 ### 1. 型定義パターン
 
-#### 1.1 Tool入力用スキーマ（Zod）
+#### 1.1 Tool入力スキーマ（DTO + Validation）
 
-OpenAI Structured Outputは全フィールドrequiredのため、optional → nullable（`z.union([z.string(), z.null()])`）で表現する。
+OpenAI Structured Outputでは全フィールドが存在する形式を求める場合があるため、任意項目の意味はnullableフィールドと明示的なバリデーションで表現する。
 
-```typescript
-// OpenAI Structured Outputは全フィールドrequired
-// optional → nullable (z.union([z.string(), z.null()]))
-
-export const OrderDraftItemRequestSchema = z.object({
-  item_num: z.string(),               // required
-  quantity: z.number(),               // required
-  pack_size: z.union([z.string(), z.null()]),  // optional → nullable
-  uom: z.enum(['CS', 'Ea', 'Lbs', '']),
-  status: z.enum(['success', 'todo']),
-  confidence: z.enum(['high', 'medium', 'low']),
-});
+```java
+// 任意項目は nullable で扱う / Treat optional semantics as nullable
+public record OrderDraftItemRequest(
+    @NotBlank String itemNum,
+    @NotNull BigDecimal quantity,
+    String packSize,
+    @NotNull Uom uom,
+    @NotNull Status status,
+    @NotNull Confidence confidence
+) {}
 ```
 
-#### 1.2 内部保存用の型（Tool入力とは別）
+#### 1.2 内部保存モデル（Tool入力とは別）
 
-AI入力と内部保存で型を分離し、nullの扱いなど変換を明確にする。
+AI入力と内部保存でモデルを分離し、nullの扱いなどの変換を明確にする。
 
-```typescript
-// AI入力: pack_size: string | null
-// 内部保存: pack_size: string (nullは空文字に変換)
+```java
+// AI入力: packSize nullable / AI input: packSize can be null
+// 内部保存: packSize 非null / Internal storage: packSize must be non-null
+public record OrderEntryPayloadItem(
+    String itemNum,
+    BigDecimal quantity,
+    String packSize,
+    Uom uom,
+    String status,
+    String confidence
+) {}
 
-export type OrderEntryPayloadItem = Omit<
-  z.infer<typeof OrderDraftItemRequestSchema>,
-  'pack_size'
-> & {
-  pack_size: string;  // null → '' に変換
-};
-
-export type OrderEntryPayload = {
-  items: OrderEntryPayloadItem[];
-  isSaved: boolean;  // UI操作で変更されるフラグ（AIは触らない）
-};
+public record OrderEntryPayload(
+    List<OrderEntryPayloadItem> items,
+    boolean isSaved
+) {}
 ```
 
 #### 1.3 Transform関数
 
 AI入力から内部保存形式への変換、および外部API用への変換を明示的に関数化する。
 
-```typescript
-// AI入力 → 内部保存形式
-export function transformToOrderEntryPayload(
-  params: SaveOrUpdateOrderDraftParams,
-): OrderEntryPayload {
-  return {
-    items: params.order_info.map((item) => ({
-      ...item,
-      pack_size: item.pack_size === null ? '' : item.pack_size,
-    })),
-    isSaved: false,  // AIが作ったものは常にfalse
-  };
+```java
+// AI入力 -> 内部保存 / AI input -> internal storage
+public static OrderEntryPayload transformToOrderEntryPayload(SaveOrUpdateOrderDraftParams params) {
+    List<OrderEntryPayloadItem> items = params.orderInfo().stream()
+        .map(item -> new OrderEntryPayloadItem(
+            item.itemNum(),
+            item.quantity(),
+            item.packSize() == null ? "" : item.packSize(),
+            item.uom(),
+            item.status(),
+            item.confidence()
+        ))
+        .toList();
+
+    return new OrderEntryPayload(items, false);
 }
 
-// 内部保存 → 外部API用（不要フィールド削除）
-export function transformToSaveOrderRequest(params): ToSaveOrderRequestParams {
-  return {
-    order_info: params.order_info.map((item) => ({
-      item_num: item.item_num,
-      quantity: item.quantity,
-      uom: item.uom,
-      remark: item.remark,
-      // original_text, status, help_request_message, confidenceは送らない
-    })),
-  };
-}
-```
+// 内部保存 -> 外部API（不要項目を除外） / Internal -> external API (remove unnecessary fields)
+public static ToSaveOrderRequestParams transformToSaveOrderRequest(OrderEntryPayload payload) {
+    List<ToSaveOrderRequestItem> orderInfo = payload.items().stream()
+        .map(item -> new ToSaveOrderRequestItem(
+            item.itemNum(),
+            item.quantity(),
+            item.uom(),
+            null
+        ))
+        .toList();
 
----
-
-### 2. FunctionCallResult パターン
-
-#### 2.1 Agent別の結果型
-
-基本構造: `status` + `result.message` + Agent固有のデータ
-
-```typescript
-// Sales Agent用
-export class FunctionCallResult {
-  status: 'success' | 'error';
-  result: {
-    message?: string;
-    savedOrderRequestId?: number;      // UI表示用にadditionalDataに焼く
-    referencedOrderRequestId?: number; // UI表示用にadditionalDataに焼く
-  };
-}
-
-// OrderEntryWorkflow用
-export class OrderEntryWorkflowFunctionCallResult {
-  status: 'success' | 'error';
-  result: {
-    message?: string;
-    outputReport?: OutpurReport;  // UI表示用にadditionalDataに焼く
-  };
-}
-
-// Reviewer Agent用
-export class ReviewerAgentFunctionCallResult {
-  status: 'success' | 'error';
-  result: {
-    message?: string;
-    reviewerAgentOutput?: ReviewerAgentOutput;  // 呼び出し元に返す
-  };
-}
-```
-
-#### 2.2 result.message の役割
-
-`result.message`はOpenAIが次のターンで参照する情報であり、UIには直接出ない。
-
-```typescript
-// OpenAIに返すもの（function_call_output）
-messages.push({
-  type: 'function_call_output',
-  call_id: callId,
-  output: JSON.stringify(result),  // ← result全体をJSON化
-});
-```
-
----
-
-### 3. additionalData パターン
-
-#### 3.1 ChatMessage.data の構造
-
-フロントからの入力とバックエンド処理で追加されるデータを型で明確に分離する。
-
-```typescript
-// Input（フロントから受け取る）
-export type ChatMessageAdditionalDataInput = {
-  customerAccountNumber?: number;
-  customerAccountName?: string;
-  branchOrgId?: number;
-  attachments?: UploadedResult[];
-  domSnapshot?: DomSnapshotInput;
-};
-
-// 保存時（バックエンド処理で追加）
-export type ChatMessageAdditionalData = ChatMessageAdditionalDataInput & {
-  // SalesAgentの処理結果
-  savedOrderRequestId?: number;
-  referencedOrderRequestId?: number;
-  // OrderEntryWorkflowの処理結果
-  outputReport?: OutpurReport;
-  // AnalyzeAgentの処理結果
-  openaiFileAnnotations?: ResponseAnnotation[];
-};
-```
-
-#### 3.2 何をadditionalDataに焼くか
-
-| データ                   | 焼く | 理由                            |
-| ------------------------ | ---- | ------------------------------- |
-| savedOrderRequestId      | OK   | UI表示・次ターンのcontext注入   |
-| referencedOrderRequestId | OK   | UI表示・次ターンのcontext注入   |
-| outputReport             | OK   | UI表示（サマリーカード）        |
-| attachments              | OK   | ファイル参照                    |
-| Tool実行の途中結果       | NG   | RunStepに記録                   |
-| workingMemory            | NG   | ChatTransaction.workingMemoryに |
-
-#### 3.3 additionalData → context注入
-
-```typescript
-async buildContentFromAdditionalData(chatMessage: ChatMessage, userId: number) {
-  const additionalData = chatMessage.data;
-  if (!additionalData) return chatMessage.text;
-
-  let context = '\n\n';
-  return `${chatMessage.text}\n\n${context}`;
+    return new ToSaveOrderRequestParams(orderInfo);
 }
 ```
 
 ---
 
-### 4. Tool実行 → additionalData焼き込みフロー
+### 2. FunctionCallResultパターン
+
+#### 2.1 Agent別の結果モデル
+
+基本構造: `status` + `result.message` + Agent固有データ
+
+```java
+// Sales Agent用 / For Sales Agent
+public record FunctionCallResult(
+    String status,
+    SalesResult result
+) {
+    public record SalesResult(
+        String message,
+        Long savedOrderRequestId,
+        Long referencedOrderRequestId
+    ) {}
+}
+
+// OrderEntryWorkflow用 / For OrderEntryWorkflow
+public record OrderEntryWorkflowFunctionCallResult(
+    String status,
+    OrderEntryWorkflowResult result
+) {
+    public record OrderEntryWorkflowResult(
+        String message,
+        OutputReport outputReport
+    ) {}
+}
+
+// Reviewer Agent用 / For Reviewer Agent
+public record ReviewerAgentFunctionCallResult(
+    String status,
+    ReviewerAgentResult result
+) {
+    public record ReviewerAgentResult(
+        String message,
+        ReviewerAgentOutput reviewerAgentOutput
+    ) {}
+}
+```
+
+#### 2.2 `result.message`の役割
+
+`result.message`はモデルが次ターンで参照する情報であり、UIには直接表示しない。
+
+```java
+// OpenAIに返却 / Return to OpenAI (function_call_output)
+messages.add(Map.of(
+    "type", "function_call_output",
+    "call_id", callId,
+    "output", objectMapper.writeValueAsString(result)
+));
+```
+
+---
+
+### 3. additionalDataパターン
+
+#### 3.1 `ChatMessage.data`の構造
+
+フロントからの入力と、バックエンド処理で追加されるデータを明確に分離する。
+
+```java
+// Input（フロントから受け取る） / Input (from frontend)
+public class ChatMessageAdditionalDataInput {
+    private Long customerAccountNumber;
+    private String customerAccountName;
+    private Long branchOrgId;
+    private List<UploadedResult> attachments;
+    private DomSnapshotInput domSnapshot;
+}
+
+// 保存時（バックエンド処理で追加） / Stored (added by backend)
+public class ChatMessageAdditionalData extends ChatMessageAdditionalDataInput {
+    private Long savedOrderRequestId;
+    private Long referencedOrderRequestId;
+    private OutputReport outputReport;
+    private List<ResponseAnnotation> openaiFileAnnotations;
+}
+```
+
+#### 3.2 additionalDataに何を保存するか
+
+| データ                   | 保存 | 理由                           |
+| ------------------------ | ---- | ------------------------------ |
+| savedOrderRequestId      | OK   | UI表示・次ターンのcontext注入  |
+| referencedOrderRequestId | OK   | UI表示・次ターンのcontext注入  |
+| outputReport             | OK   | UI表示（サマリーカード）       |
+| attachments              | OK   | ファイル参照                   |
+| Tool実行の途中結果       | NG   | RunStepに記録                  |
+| workingMemory            | NG   | ChatTransactionに保存          |
+
+#### 3.3 `additionalData` -> context注入
+
+```java
+public String buildContentFromAdditionalData(ChatMessage chatMessage, Long userId) {
+    ChatMessageAdditionalData additionalData = chatMessage.getData();
+    if (additionalData == null) {
+        return chatMessage.getText();
+    }
+
+    String context = "\n\n";
+    return chatMessage.getText() + "\n\n" + context;
+}
+```
+
+---
+
+### 4. Tool実行 -> additionalData保存フロー
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ 1. Tool実行                                                      │
 ├─────────────────────────────────────────────────────────────────┤
-│ const result = await this.executeRequestOrder(...);              │
-│ // result = { status: 'success',                                │
-│ //            result: { message: '...', savedOrderRequestId: 5 }}│
+│ FunctionCallResult result = executeRequestOrder(...);            │
+│ // result = { status: "success",                                │
+│ //            result: { message: "...", savedOrderRequestId: 5 }}│
 └─────────────────────────────────────────────────────────────────┘
-                            ↓
+                           ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 2. OpenAIに返す                                                  │
 ├─────────────────────────────────────────────────────────────────┤
-│ messages.push({                                                  │
-│   type: 'function_call_output',                                  │
-│   call_id: callId,                                               │
-│   output: JSON.stringify(result),                                │
-│ });                                                              │
+│ messages.add({                                                   │
+│   "type": "function_call_output",                              │
+│   "call_id": callId,                                            │
+│   "output": objectMapper.writeValueAsString(result),            │
+│ });                                                               │
 └─────────────────────────────────────────────────────────────────┘
-                            ↓
+                           ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. UI表示用に一時保持                                            │
 ├─────────────────────────────────────────────────────────────────┤
-│ if (result.result.savedOrderRequestId) {                         │
-│   savedOrderRequestId = result.result.savedOrderRequestId;       │
-│ }                                                                │
+│ if (result.result().savedOrderRequestId() != null) {             │
+│   savedOrderRequestId = result.result().savedOrderRequestId();    │
+│ }                                                                 │
 └─────────────────────────────────────────────────────────────────┘
-                            ↓
+                           ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 4. 次のresponse.output_textでChatMessage保存時に焼く             │
+│ 4. 次のChatMessage保存時に書き込む                               │
 ├─────────────────────────────────────────────────────────────────┤
-│ await this.parseMessageAgentService.run(                         │
-│   conversation, chatTx, responseText, response.id,               │
-│   { savedOrderRequestId, referencedOrderRequestId }  // ← ここ  │
-│ );                                                               │
-│ savedOrderRequestId = undefined; // リセット                     │
+│ parseMessageAgentService.run(                                    │
+│   conversation, chatTx, responseText, responseId,                │
+│   Map.of("savedOrderRequestId", savedOrderRequestId,            │
+│          "referencedOrderRequestId", referencedOrderRequestId)   │
+│ );                                                                │
+│ savedOrderRequestId = null; // リセット                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Point**: Tool実行結果は次のassistantメッセージのadditionalDataに焼く
+**Point**: Tool実行結果は次のassistantメッセージの`additionalData`に保存する。
 
 ---
 
@@ -242,93 +251,94 @@ async buildContentFromAdditionalData(chatMessage: ChatMessage, userId: number) {
 
 Tool実行の前後で記録する。
 
-```typescript
-// Tool実行の前後で記録
-let runStep = new RunStep(userMessage.chatTransactionId, toolName);
-runStep.input = toolArgs;           // ← Tool呼び出し時の引数
-runStep = await this.manager.save(runStep);
+```java
+// 実行前後を記録 / Record before and after execution
+RunStep runStep = runStepRepository.save(new RunStep(userMessage.getChatTransactionId(), toolName));
+runStep.setInput(toolArgsJson);
 
-const result = await this.executeFunctionCall(...);
+FunctionCallResult result = executeFunctionCall(...);
 
-runStep.output = result;            // ← 実行結果
-await this.manager.save(runStep);
+runStep.setOutput(objectMapper.writeValueAsString(result));
+runStepRepository.save(runStep);
 ```
 
 #### 5.2 記録内容
 
-```typescript
-@Entity()
-export class RunStep {
-  @Column()
-  toolName: string;
+```java
+@Entity
+public class RunStep {
+    @Column(nullable = false)
+    private String toolName;
 
-  @Column({ type: 'jsonb' })
-  input: any;   // Tool引数（パース済み or 生文字列）
+    @Column(columnDefinition = "jsonb")
+    private String input; // Tool引数JSON（生 or 正規化後）
 
-  @Column({ type: 'jsonb' })
-  output: any;  // FunctionCallResult
+    @Column(columnDefinition = "jsonb")
+    private String output; // FunctionCallResult JSON
 }
 ```
 
-**Point**: RunStepはデバッグ・監査用。UIには出さない。
+**Point**: RunStepはデバッグ・監査用。UIには表示しない。
 
 ---
 
-### 6. parseAndValidateToolArgs ヘルパー
+### 6. `parseAndValidateToolArgs`ヘルパー
 
-JSON文字列のパースとZodバリデーションを統一的に行うヘルパー関数。
+ObjectMapper + Bean Validationで、JSON文字列のパースとバリデーションを統一的に行う。
 
-```typescript
-export function parseAndValidateToolArgs<T>(
-  toolArgs: unknown,
-  schema: z.ZodSchema<T>,
-  toolName: string,
-): { success: true; data: T } | { success: false; error: string } {
-  // Step 1: JSON文字列ならパース
-  const parseResult = ParseToolArgsSchema.safeParse(toolArgs);
-  if (!parseResult.success) {
-    return { success: false, error: `Invalid JSON for ${toolName}...` };
-  }
-
-  // Step 2: Zodスキーマでバリデーション
-  const validationResult = schema.safeParse(parseResult.data);
-  if (!validationResult.success) {
-    return { success: false, error: `Invalid parameters for ${toolName}...` };
-  }
-
-  return { success: true, data: validationResult.data };
+```java
+public static <T> ParseResult<T> parseAndValidateToolArgs(
+    String toolArgsJson,
+    Class<T> targetClass,
+    String toolName,
+    ObjectMapper objectMapper,
+    Validator validator
+) {
+    try {
+        T parsed = objectMapper.readValue(toolArgsJson, targetClass);
+        Set<ConstraintViolation<T>> violations = validator.validate(parsed);
+        if (!violations.isEmpty()) {
+            return ParseResult.error("Invalid parameters for " + toolName + "...");
+        }
+        return ParseResult.success(parsed);
+    } catch (Exception e) {
+        return ParseResult.error("Invalid JSON for " + toolName + "...");
+    }
 }
 ```
 
 **使用例:**
 
-```typescript
-case 'save_order_draft':
-  const result = parseAndValidateToolArgs(
-    toolArgs,
-    SaveOrUpdateOrderDraftParamsSchema,
-    'save order draft',
-  );
-  if (!result.success) {
-    return { status: 'error', result: { message: result.error } };
-  }
-  const params = result.data;  // 型安全
-  // ...
+```java
+case "save_order_draft" -> {
+    ParseResult<SaveOrUpdateOrderDraftParams> result = parseAndValidateToolArgs(
+        toolArgsJson,
+        SaveOrUpdateOrderDraftParams.class,
+        "save order draft",
+        objectMapper,
+        validator
+    );
+    if (!result.success()) {
+        return new FunctionCallResult("error", new FunctionCallResult.SalesResult(result.error(), null, null));
+    }
+    SaveOrUpdateOrderDraftParams params = result.data();
+    // ...
+}
 ```
 
 ---
 
-### 7. データの流れまとめ
+### 7. データフローまとめ
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Tool入力                                                              │
-│ (Zodスキーマ、nullable許容)                                           │
+│ (DTO + Bean Validation, 必要に応じてnullable許容)                      │
 └───────────────────────────────────┬──────────────────────────────────┘
                                     ↓ parseAndValidateToolArgs
 ┌───────────────────────────────────┴──────────────────────────────────┐
 │ 内部処理                                                              │
-│ (Transform関数でnull→空文字、不要フィールド削除)                       │
+│ (Transform関数でnull -> 空文字、不要フィールド削除)                    │
 └───────────────────────────────────┬──────────────────────────────────┘
                                     ↓
         ┌───────────────────────────┼───────────────────────────┐

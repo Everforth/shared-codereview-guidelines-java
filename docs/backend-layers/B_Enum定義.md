@@ -22,44 +22,53 @@
 
 #### 実装例
 
-```typescript
+```java
 // ============================================
-// 全集合（legacy含む）
+// 全集合（DBに残るlegacy値を含む）
 // ============================================
-export const ConversationAgentAll = {
-  salesAgent: 'salesAgent',
-  orderEntryWorkflow: 'orderEntryWorkflow',
-  analyzeAgent: 'analyzeAgent',
-  marketAgent: 'marketAgent',
+public enum ConversationAgentAll {
+  SALES_AGENT("salesAgent"),
+  ORDER_ENTRY_WORKFLOW("orderEntryWorkflow"),
+  ANALYZE_AGENT("analyzeAgent"),
+  MARKET_AGENT("marketAgent"),
   // deprecated
-  legacyAgent: 'legacyAgent',
-} as const;
+  LEGACY_AGENT("legacyAgent");
 
-export type ConversationAgentAll =
-  typeof ConversationAgentAll[keyof typeof ConversationAgentAll];
+  private final String dbValue;
+
+  ConversationAgentAll(String dbValue) {
+    this.dbValue = dbValue;
+  }
+
+  public String getDbValue() {
+    return dbValue;
+  }
+}
 
 // ============================================
 // 現役仕様（新規に使ってよい集合）
 // ============================================
-export const ConversationAgent = {
-  salesAgent: ConversationAgentAll.salesAgent,
-  orderEntryWorkflow: ConversationAgentAll.orderEntryWorkflow,
-  analyzeAgent: ConversationAgentAll.analyzeAgent,
-  marketAgent: ConversationAgentAll.marketAgent,
-} as const;
+public final class ConversationAgent {
+  private ConversationAgent() {}
 
-export type ConversationAgent =
-  typeof ConversationAgent[keyof typeof ConversationAgent];
+  public static final java.util.Set<ConversationAgentAll> ACTIVE =
+      java.util.EnumSet.of(
+          ConversationAgentAll.SALES_AGENT,
+          ConversationAgentAll.ORDER_ENTRY_WORKFLOW,
+          ConversationAgentAll.ANALYZE_AGENT,
+          ConversationAgentAll.MARKET_AGENT
+      );
+}
 ```
 
 #### 使い分け
 
-| 用途                        | 使用する型                      |
-| --------------------------- | ------------------------------- |
-| Entity定義（DBカラムの型）  | `ConversationAgentAll`           |
-| DTO・バリデーション         | `ConversationAgent`（現役仕様） |
-| Service層のビジネスロジック | `ConversationAgent`（現役仕様） |
-| DBからの読み取り結果の型    | `ConversationAgentAll`           |
+| 用途                        | 使用する型/構造                           |
+| --------------------------- | ----------------------------------------- |
+| Entity定義（DBカラムの型）  | `ConversationAgentAll`                     |
+| DTO・バリデーション         | 現役仕様を表す構造（`ConversationAgent`） |
+| Service層のビジネスロジック | 現役仕様を表す構造（`ConversationAgent`） |
+| DBからの読み取り結果の型    | `ConversationAgentAll`                     |
 
 ---
 
@@ -68,8 +77,8 @@ export type ConversationAgent =
 #### 基本原則
 
 - **enumの追加・リネームは手書きmigration**で行う
-- **TypeORMの自動migrationでenumを変更しない**
-- **enumNameは必ず固定**する（Entity側で明示的に指定）
+- **ORMの自動生成migrationでenumを変更しない**
+- **DB enum型へのマッピングは必ず固定**する（Entity/migration側で明示）
 - **deprecated値はDB enumに残したまま運用**する
 
 #### 手書きMigrationの書き方
@@ -97,23 +106,19 @@ RENAME VALUE 'analyzeAgent' TO 'analysisAgent';
 CREATE TYPE order_status AS ENUM ('draft', 'submitted', 'confirmed', 'cancelled');
 ```
 
-#### TypeORM Entity側の設定
+#### JPA/Hibernate Entity側の設定
 
-```typescript
-@Entity()
-export class Conversation {
-  @Column({
-    type: 'enum',
-    enum: ConversationAgentAll,
-    enumName: 'conversation_agent',  // ← 必ず固定名を指定
-    default: ConversationAgentAll.salesAgent
-  })
-  agent: ConversationAgentAll;
+```java
+@Entity
+public class Conversation {
+  @Enumerated(EnumType.STRING)
+  @Column(name = "agent", nullable = false, columnDefinition = "conversation_agent")
+  private ConversationAgentAll agent = ConversationAgentAll.SALES_AGENT;
 }
 ```
 
 #### 禁止事項
 
-- `synchronize: true` でのenum自動変更
-- TypeORMが生成するmigrationでのenum変更（手書きで上書きすること）
+- ORMのスキーマ自動更新（例: `spring.jpa.hibernate.ddl-auto=update`）でのenum自動変更
+- ORMが生成するmigrationでのenum変更（手書きで上書きすること）
 - DB enumからの値削除（過去データが参照できなくなる）
