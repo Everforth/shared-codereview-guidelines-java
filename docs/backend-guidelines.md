@@ -22,21 +22,7 @@
 現在のレビュー進捗を確認し、次にレビューすべき1つの層のみを決定してください。
 他の層のコードは一切確認しないでください。
 
-【AI Agent層の判定】
-
-レビュー開始時、以下のファイルパターンに変更があるか確認する:
-
-- `*AgentService.java`
-- `*-agent/*.java`
-- `*/agents/*.java`
-- Tool定義ファイル（`**/tools/**`）
-
-該当ファイルがある場合、AI Agent層を最初にレビューする。
-
 【レビュー対象層】
-
-0. AI Agent層（Agent実装、ツール定義、型定義 等）※該当ファイルがある場合のみ
-   - Agent実装パターンの遵守、FunctionCallResultの設計、additionalDataの管理
 
 1. DB層（Entity定義, 型定義, スキーマ定義 等）
    - データモデルの整合性、制約・インデックスの適切性、型定義の一貫性
@@ -51,7 +37,6 @@
 
 【レビュー順序】
 
-- 0層目: AI Agent層（該当ファイルがある場合のみ）
 - 1層目: DB層
 - 2層目: Controller層
 - 3層目: Service層
@@ -66,8 +51,6 @@
 STEP 1で決定した層に対応するガイドラインを確認してください。
 該当する1つのガイドラインのみ参照し、他の層のガイドラインは開かないでください。
 
-- AI Agent層を特定した場合のみ: @shared-codereview-guidelines/docs/backend-layers/A_ai_agent.md
-  - 実装パターンからの逸脱は修正必須とする
 - DB層を特定した場合のみ: @shared-codereview-guidelines/docs/backend-layers/1_db.md
 - Controller層を特定した場合のみ: @shared-codereview-guidelines/docs/backend-layers/2_controller.md
 - Service層を特定した場合のみ: @shared-codereview-guidelines/docs/backend-layers/3_service.md
@@ -132,7 +115,6 @@ STEP 1で決定した1つの層のみをレビューしてください。
 
 ```
 ## レビュー状況
-- ✅ AI Agent層: レビュー完了（または「該当なし」）
 - ✅ DB層: レビュー完了
 - ✅ Controller層: レビュー完了
 - ✅ Service層: レビュー完了
@@ -143,7 +125,6 @@ STEP 1で決定した1つの層のみをレビューしてください。
 
 ```
 ## レビュー状況
-- ✅ AI Agent層: 該当なし
 - ✅ DB層: レビュー完了
 - 🔴 Controller層: 修正必須項目あり（レビュー停止）
 - ⏸️ Service層: 未実施
